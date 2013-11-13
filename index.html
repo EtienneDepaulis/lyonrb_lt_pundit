@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+
+	<head>
+		<meta charset="utf-8">
+
+		<title>CanCan vs Pundit</title>
+
+		<meta name="description" content="How to contribute to an open-source project ?">
+		<meta name="author" content="Etienne Depaulis">
+
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+		<link rel="stylesheet" href="css/reveal.min.css">
+		<link rel="stylesheet" href="css/theme/default.css" id="theme">
+		
+		<link rel="stylesheet" href="css/print/pdf.css" type="text/css" media="print">
+
+		<!-- For syntax highlighting -->
+		<link rel="stylesheet" href="lib/css/zenburn.css">
+
+		<!--[if lt IE 9]>
+		<script src="lib/js/html5shiv.js"></script>
+		<![endif]-->
+	</head>
+
+	<body>
+
+		<div class="reveal">
+
+			<!-- Any section element inside of this container is displayed as a slide -->
+			<div class="slides">
+
+<section>
+	<h2>CanCan vs Pundit</h2>
+	<p><small>LyonRB lightning talks / <a href="http://twitter.com/EtienneDepaulis">@EtienneDepaulis</a></small></p>
+	
+	<img src="perangusta.png" />
+</section>
+
+<section>
+	<h2>Context</h2>
+	
+	<ul>
+    <li>Roles and Role management services</li>
+  </ul>
+  
+  <pre><code data-trim contenteditable>
+AuthorizeObjectService.new(user).can_write?(contract_from_user) # => true/false
+  </code></pre>
+  
+  <ul>
+    <li>Business logic services</li>
+	</ul>
+	
+	<pre><code data-trim contenteditable>
+BudgetLogicService.new(budget).can_update? # => true/false
+  </code></pre>
+		
+</section>
+
+<section>
+	<h2>Solution #1 : CanCan</h2>
+	<img src="cancan.png" />
+</section>
+
+
+<section>
+	<pre><code data-trim contenteditable>
+alias_action :create, :update, :destroy, :to => :write
+service = AuthorizeObjectService.new(user)
+
+can :write, Budget do |budget|
+  service.can_write?(budget)
+end
+  </code></pre>
+</section>
+
+<section>
+	<pre><code data-trim contenteditable>
+alias_action :create, :update, :destroy, :to => :write
+service = AuthorizeObjectService.new(user)
+
+can :write, Budget do |budget|
+  service.can_write?(budget)
+end
+
+cannot [:update, :destroy], Budget do |budget|
+  !BudgetAbilitiesService.new(budget).can_update?
+end
+
+...
+  </code></pre>
+</section>
+
+<section>
+  <pre><code data-trim contenteditable>
+BudgetLogicService.new(budget).permitted_attributes # => [:id, :status, ...]
+  </code></pre>
+  
+  <h4>Strong Parameters :s</h4>
+</section>
+
+<section>
+  <h4>Scopes ???</h4>
+</section>
+
+<section>
+	<img src="broken.jpg" />
+</section>
+
+<section>
+	<h2>Solution #2 : Pundit</h2>
+	<img src="pundit.png" />
+</section>
+
+<section>  
+  <h2>Plain Old Ruby Object !</h2>
+  
+  <pre><code data-trim contenteditable>
+class ApplicationPolicy
+  attr_reader :user, :record
+
+  def initialize(user, record)
+    @user = user
+    @record = record
+  end
+
+  def index? ; true; end
+  def show? ; false; end
+  def create? ; false; end
+  alias_method :new?, :create?
+  ...
+end
+  </code></pre>
+</section>
+
+<section>  
+  <h2>manage :all</h2>
+  
+  <pre><code data-trim contenteditable>
+def user_index? ; true; end
+def user_show? ; false; end
+  
+def method_missing(method_sym, *arguments, &block)
+  # to only catch create? and not user_create? (avoiding ∞ loops)
+  if method_sym.to_s !~ /^user_/ && method_sym.to_s =~ /^(.*)*\?$/ 
+    return true if user.admin?     
+    public_send("user_#{method_sym}", *arguments)
+  else
+    false # by default, nothing is authorized
+  end
+end
+  </code></pre>
+</section>
+
+<section>  
+  <h2>can?(:create, @budget)</h2>
+  
+  <pre><code data-trim contenteditable>
+def create
+  @budget = Budget.new(budget_params)
+  @budget.creator = current_user
+  authorize @budget
+end
+  </code></pre>
+  
+  <pre><code data-trim contenteditable>
+class BudgetPolicy < ApplicationPolicy
+
+  def user_show?
+    can_read?
+  end
+
+  def user_create?
+    can_write?
+  end
+  alias_method :user_new?, :user_create?
+  
+end
+  </code></pre>
+
+</section>
+
+<section>  
+  <h2>scopes</h2>
+  
+  <pre><code data-trim contenteditable>
+class BudgetPolicy < ApplicationPolicy
+
+  Scope = Struct.new(:user, :scope) do
+    def resolve
+      return scope if user.power?
+
+      AuthorizeScopeService.new(user, scope).call.collection
+    end
+  end
+end
+  </code></pre>
+
+  <pre><code data-trim contenteditable>
+@budgets = policy_scope(Budget)
+  </code></pre>
+  
+</section>
+
+<section>  
+  <h2>RSpec :)</h2>
+  
+  <pre><code data-trim contenteditable>
+describe UserPolicy do
+  subject { UserPolicy.new(current_user, object) }
+
+  context "for a lambda user" do
+    let(:current_user)  { build_stubbed :user }
+    let(:object)        { build_stubbed :user }
+    
+    permits :none
+  end
+  
+  context "for himself" do
+    let(:current_user)  { build_stubbed :user }
+    let(:object)        { current_user }
+    
+    permits [:edit, :update]
+  end
+  
+  context "for a power user" do
+    let(:current_user)  { build_stubbed :power_user }
+    
+    permits :all
+  end
+end
+  </code></pre>
+
+  <p>http://thunderboltlabs.com/blog/2013/03/27/testing-pundit-policies-with-rspec/</p>
+</section>
+
+
+<section>
+  <h3>Yeaaahh !</h3>
+  <img src="grandma.png" />
+</section>
+
+<section>
+	<h1>THE END</h1>
+	<h3>BY Etienne Depaulis</h3>
+</section>
+
+<section>
+  <h3>One More Thing ...</h3>
+</section>
+
+<section>  
+  <h2>Services for Controllers</h2>
+  
+  <pre><code data-trim contenteditable>
+CreateUserService.new(@user).call
+  </code></pre>
+  
+  <pre><code data-trim contenteditable>
+def create
+  # initiate the service
+  if success
+    # send an email
+    redirect_to users_path, success: "You rock !"
+  else
+    redirect_to users_path, error: "You suck ..."
+  end
+end      
+  </code></pre>
+
+</section>
+
+
+			</div>
+
+		</div>
+
+		<script src="lib/js/head.min.js"></script>
+		<script src="js/reveal.min.js"></script>
+
+		<script>
+
+			// Full list of configuration options available here:
+			// https://github.com/hakimel/reveal.js#configuration
+			Reveal.initialize({
+				controls: true,
+				progress: true,
+				history: true,
+				center: true,
+
+				theme: Reveal.getQueryHash().theme, // available themes are in /css/theme
+				transition: Reveal.getQueryHash().transition || 'default', // default/cube/page/concave/zoom/linear/fade/none
+
+				// Optional libraries used to extend on reveal.js
+				dependencies: [
+					{ src: 'lib/js/classList.js', condition: function() { return !document.body.classList; } },
+					{ src: 'plugin/markdown/marked.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/markdown/markdown.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } },
+					{ src: 'plugin/zoom-js/zoom.js', async: true, condition: function() { return !!document.body.classList; } },
+					{ src: 'plugin/notes/notes.js', async: true, condition: function() { return !!document.body.classList; } },
+					{ src: 'plugin/print-pdf/print-pdf.js', async: true, condition: function() { return !!document.body.classList; } }
+				]
+			});
+
+		</script>
+
+	</body>
+</html>
